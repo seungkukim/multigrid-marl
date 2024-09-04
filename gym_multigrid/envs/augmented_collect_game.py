@@ -1,6 +1,7 @@
 from gym_multigrid.multigrid import *
 
-class CollectGameEnv(MultiGridEnv):
+
+class AugCollectGameEnv(MultiGridEnv):
     """
     Environment in which the agents have to collect the balls
     """
@@ -11,11 +12,12 @@ class CollectGameEnv(MultiGridEnv):
         width=None,
         height=None,
         num_balls=[],
-        agents_index = [],
+        agents_index=[],
         balls_index=[],
         balls_reward=[],
-        zero_sum = False,
+        zero_sum=False,
         view_size=7,
+        opponent_policy=[],
         **kwargs
     ):
         self.num_balls = num_balls
@@ -29,11 +31,22 @@ class CollectGameEnv(MultiGridEnv):
         for i in agents_index:
             agents.append(Agent(self.world, i, view_size=view_size))
 
+        self.num_agent = len(agents_index)
+        self.num_opponent = len(opponent_policy)
+
+        assert self.num_agent == self.num_opponent + 1
+
+        self.opponent_policy = []
+        for opp in opponent_policy:
+            self.opponent_policy.append(opp)
+
+        self.prev_obs = [None] * len(opponent_policy)
+
         super().__init__(
             grid_size=size,
             width=width,
             height=height,
-            max_steps= 10000,
+            max_steps=10000,
             # Set this to True for maximum speed
             see_through_walls=False,
             agents=agents,
@@ -41,18 +54,18 @@ class CollectGameEnv(MultiGridEnv):
             **kwargs
         )
 
-
-
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
 
         # Generate the surrounding walls
         self.grid.horz_wall(self.world, 0, 0)
-        self.grid.horz_wall(self.world, 0, height-1)
+        self.grid.horz_wall(self.world, 0, height - 1)
         self.grid.vert_wall(self.world, 0, 0)
-        self.grid.vert_wall(self.world, width-1, 0)
+        self.grid.vert_wall(self.world, width - 1, 0)
 
-        for number, index, reward in zip(self.num_balls, self.balls_index, self.balls_reward):
+        for number, index, reward in zip(
+            self.num_balls, self.balls_index, self.balls_reward
+        ):
             for i in range(number):
                 self.place_obj(Ball(self.world, index, reward))
 
@@ -60,16 +73,15 @@ class CollectGameEnv(MultiGridEnv):
         for a in self.agents:
             self.place_agent(a)
 
-
     def _reward(self, i, rewards, reward=1):
         """
         Compute the reward to be given upon success
         """
-        for j,a in enumerate(self.agents):
-            if a.index==i or a.index==0:
-                rewards[j]+=reward
+        for j, a in enumerate(self.agents):
+            if a.index == i or a.index == 0:
+                rewards[j] += reward
             if self.zero_sum:
-                if a.index!=i or a.index==0:
+                if a.index != i or a.index == 0:
                     rewards[j] -= reward
 
     def _handle_pickup(self, i, rewards, fwd_pos, fwd_cell):
@@ -83,17 +95,33 @@ class CollectGameEnv(MultiGridEnv):
     def _handle_drop(self, i, rewards, fwd_pos, fwd_cell):
         pass
 
+    def reset(self):
+        obs = super().reset()
+        for i in range(1, self.num_agent):
+            self.prev_obs[i - 1] = obs[i]
+        return obs[0]
+
     def step(self, actions):
-        obs, rewards, done, info = MultiGridEnv.step(self, actions)
-        return obs, rewards, done, info
+        _actions = []
 
+        if self.num_opponent == 0:
+            actions = actions.tolist()
+            if isinstance(actions, int):
+                actions = [actions]
 
-class CollectGame4HEnv10x10N2(CollectGameEnv):
-    def __init__(self):
-        super().__init__(size=10,
-        num_balls=[5],
-        agents_index = [1,2,3],
-        balls_index=[0],
-        balls_reward=[1],
-        zero_sum=True)
+            obs, rewards, done, info = super().step(actions)
+        else:
+            _actions.append(int(actions))
 
+            for i in range(self.num_opponent):
+                opponent_policy = self.opponent_policy[i]
+                ac, _ = opponent_policy.predict(self.prev_obs[i])
+                _actions.append(ac)
+
+            obs, rewards, done, info = super().step(_actions)
+
+        rewards = int(rewards[0])
+        for i in range(self.num_opponent):
+            self.prev_obs[i] = obs[i + 1]
+
+        return obs[0], rewards, done, info
